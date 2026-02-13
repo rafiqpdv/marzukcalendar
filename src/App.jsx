@@ -94,17 +94,26 @@ const MarzukCalendar = () => {
 
   const fetchBookings = async () => {
     try {
+      console.log('Fetching bookings from Firebase...');
       const querySnapshot = await getDocs(collection(db, 'bookings'));
-      const bookingsData = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        date: doc.data().date?.toDate ? doc.data().date.toDate() : new Date(doc.data().date)
-      }));
+      console.log('Query snapshot received, docs count:', querySnapshot.docs.length);
+      
+      const bookingsData = querySnapshot.docs.map(doc => {
+        const data = doc.data();
+        console.log('Processing booking:', doc.id, data);
+        return {
+          id: doc.id,
+          ...data,
+          date: data.date?.toDate ? data.date.toDate() : new Date(data.date)
+        };
+      });
+      
+      console.log('Total bookings loaded:', bookingsData.length);
       setBookings(bookingsData);
       setFilteredBookings(bookingsData);
     } catch (error) {
       console.error("Error fetching bookings:", error);
-      alert("Error loading bookings. Please check Firebase configuration.");
+      alert(`❌ Error loading bookings: ${error.message}\n\nPlease check:\n1. Firebase config is correct\n2. Firestore is enabled\n3. Collection name is "bookings"`);
     }
   };
 
@@ -135,6 +144,57 @@ const MarzukCalendar = () => {
 
   const handleBookingSubmit = async (e) => {
     e.preventDefault();
+    
+    console.log('=== FORM SUBMIT STARTED ===');
+    console.log('Form data:', bookingForm);
+
+    // Detailed validation
+    if (!bookingForm.photographerName) {
+      alert('❌ Please select a photographer');
+      return;
+    }
+    
+    if (!bookingForm.date) {
+      alert('❌ Please select a date');
+      return;
+    }
+    
+    if (!bookingForm.fromTime) {
+      alert('❌ Please select from time');
+      return;
+    }
+    
+    if (!bookingForm.toTime) {
+      alert('❌ Please select to time');
+      return;
+    }
+
+    if (bookingForm.fromTime >= bookingForm.toTime) {
+      alert('❌ "To Time" must be after "From Time"');
+      return;
+    }
+
+    if (!bookingForm.company || bookingForm.company.trim() === '') {
+      alert('❌ Please enter company name');
+      return;
+    }
+
+    if (!bookingForm.contactPerson || bookingForm.contactPerson.trim() === '') {
+      alert('❌ Please enter contact person');
+      return;
+    }
+
+    if (!bookingForm.contactNumber || bookingForm.contactNumber.trim() === '') {
+      alert('❌ Please enter contact number');
+      return;
+    }
+
+    if (!bookingForm.packageAmount || parseFloat(bookingForm.packageAmount) <= 0) {
+      alert('❌ Please enter a valid package amount');
+      return;
+    }
+
+    console.log('All validations passed');
 
     // Check time clash
     const clashCheck = checkTimeClash(
@@ -144,38 +204,61 @@ const MarzukCalendar = () => {
       editingBooking?.id
     );
 
+    console.log('Clash check result:', clashCheck);
+
     if (clashCheck.hasClash) {
       alert('⚠️ Time Clash! Maximum 2 bookings allowed for this time slot. Please select another time.');
       return;
     }
 
+    console.log('No time clash, proceeding to save...');
+
     try {
       const bookingData = {
-        ...bookingForm,
+        photographerName: bookingForm.photographerName,
         date: Timestamp.fromDate(new Date(bookingForm.date)),
+        fromTime: bookingForm.fromTime,
+        toTime: bookingForm.toTime,
+        packageType: bookingForm.packageType,
+        company: bookingForm.company,
+        contactPerson: bookingForm.contactPerson,
+        reference: bookingForm.reference || '',
+        contactNumber: bookingForm.contactNumber,
         packageAmount: parseFloat(bookingForm.packageAmount),
-        partPaidAmount: parseFloat(bookingForm.partPaidAmount),
-        balanceAmount: parseFloat(bookingForm.balanceAmount),
+        bookingStatus: bookingForm.bookingStatus,
+        handoverStatus: bookingForm.handoverStatus,
         handoverDate: bookingForm.handoverDate ? Timestamp.fromDate(new Date(bookingForm.handoverDate)) : null,
+        handoverUrl: bookingForm.handoverUrl || '',
+        paymentStatus: bookingForm.paymentStatus,
+        partPaidAmount: parseFloat(bookingForm.partPaidAmount || '0'),
+        balanceAmount: parseFloat(bookingForm.balanceAmount || '0'),
         fullPaidDate: bookingForm.fullPaidDate ? Timestamp.fromDate(new Date(bookingForm.fullPaidDate)) : null,
         createdAt: Timestamp.now()
       };
 
+      console.log('Booking data prepared:', bookingData);
+
       if (editingBooking) {
+        console.log('Updating existing booking:', editingBooking.id);
         const bookingRef = doc(db, 'bookings', editingBooking.id);
         await updateDoc(bookingRef, { ...bookingData, updatedAt: Timestamp.now() });
+        console.log('✅ Booking updated');
         alert('✅ Booking updated successfully!');
       } else {
-        await addDoc(collection(db, 'bookings'), bookingData);
+        console.log('Creating new booking...');
+        const docRef = await addDoc(collection(db, 'bookings'), bookingData);
+        console.log('✅ Booking created with ID:', docRef.id);
         alert('✅ Booking created successfully!');
       }
 
       resetForm();
       setShowBookingModal(false);
-      fetchBookings();
+      await fetchBookings();
+      console.log('=== FORM SUBMIT COMPLETED ===');
     } catch (error) {
-      console.error("Error saving booking:", error);
-      alert("❌ Error saving booking. Please try again.");
+      console.error("❌ Error saving booking:", error);
+      console.error("Error details:", error.message, error.code);
+      alert(`❌ Error saving booking: ${error.message}\n\nPlease check:\n1. Firebase config is set\n2. Firestore is enabled\n3. Browser console for details`);
     }
   };
 
@@ -644,7 +727,12 @@ const MarzukCalendar = () => {
               <button
                 onClick={() => {
                   resetForm();
-                  setBookingForm(prev => ({ ...prev, date: selectedDate.toISOString().split('T')[0] }));
+                  // Fix timezone issue - use local date string
+                  const year = selectedDate.getFullYear();
+                  const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+                  const day = String(selectedDate.getDate()).padStart(2, '0');
+                  const localDateString = `${year}-${month}-${day}`;
+                  setBookingForm(prev => ({ ...prev, date: localDateString }));
                   setShowBookingModal(true);
                 }}
                 style={{
